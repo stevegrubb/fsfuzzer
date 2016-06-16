@@ -1,0 +1,9 @@
+0.8
+- Support lvm partitions
+- Add btrfs and udf support
+- Detect some new xfs errors
+
+0.7
+- Changed test driver from shell script to C for better control
+- Support ecryptfs tests
+- lots of new file systems
