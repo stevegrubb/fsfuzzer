@@ -16,6 +16,7 @@ make
 You do not need to install the program anywhere, just use it
 right where you unpack it.
 
+
 USAGE
 =====
 To get started fuzzing file systems, the program expects
@@ -59,11 +60,13 @@ HAVE BEEN WARNED!
 
 
 CURRENT FILE SYSTEMS
+====================
 cramfs, ext2/3/4, btrfs, gfs2, hfs, iso9660, jffs2, msdos, reiserfs,
 romfs, squashfs, swap, vfat, xfs, and ecryptfs over other file systems.
 
 
 EXTENDING
+=========
 If you want to add support for a file system not already covered,
 this is what you want to do. 
 
