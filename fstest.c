@@ -42,7 +42,7 @@
 #define CHECK_XATTR 1
 
 #ifdef CHECK_XATTR
-#include <attr/xattr.h>
+#include <sys/xattr.h> //glibc-headers provide this
 #define MAXLISTBUF 65536
 #endif
 
