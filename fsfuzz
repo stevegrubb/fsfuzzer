@@ -17,6 +17,8 @@ DIR="/media/test"
 PASSES="1000"
 START_SWEEP=`expr \( $PASSES \* 6 \) \/ 10`
 
+mkdir -p $DIR
+
 # Name of logical volume if created
 LV_DEV=""
 
@@ -33,12 +35,12 @@ if [ -x /sbin/mount.ecryptfs ] ; then
 fi
 if [ -x /usr/bin/hformat ] ; then
 	filesystems="$filesystems hfs"
-
-	# gfs2 is superset of hfs
-	if [ -x /sbin/mkfs.gfs2 ] ; then
-		filesystems="$filesystems gfs2"
-	fi
 fi
+
+if [ -x /sbin/mkfs.gfs2 ] ; then
+	filesystems="$filesystems gfs2"
+fi
+
 if [ -x /usr/bin/mkisofs ] ; then
 	filesystems="$filesystems iso9660"
 fi
@@ -128,13 +130,24 @@ pick_block_size () {
 	6) BLOCKSIZE="32768"
 	;;
 	esac
+
+	# No Linux fs can yet do block size > page size
+	PAGE_SIZE=`getconf PAGESIZE`
+	if [ "$BLOCKSIZE" -gt "$PAGE_SIZE" ]; then
+		BLOCKSIZE=$PAGE_SIZE
+	fi
+	# btrfs only handles block size == page size
+	if [ "$fs" == "btrfs" ]; then
+		echo "btrfs: restricting block size to page size $PAGE_SIZE"
+		BLOCKSIZE=$PAGE_SIZE
+	fi
 	echo "Using block size of $BLOCKSIZE"
 }
 
 pick_filesystem_size () {
 	typeset fs="$1"
 	typeset blocksize="$2"
-	typeset min="0"
+	typeset min="0"		# min fs size in megabytes
 
 	# This will be weighted towards 4 meg
 	typeset tm=`date +%S`
@@ -153,16 +166,20 @@ pick_filesystem_size () {
 	esac
 
 	case $fs in
-	ext3|ext4|btrfs) # ext3 needs at least 1024 journal blocks, say 1024 fs
+	"ext3|ext4") # ext3 needs at least 1024 journal blocks, say 1024 fs
 		min=`expr $blocksize \* 2048 / 1048576`
+	;;
+	"btrfs")
+		# for bare mkfs.btrfs; other mkfs options might require more
+		min=16
 	;;
 	"ecryptfs")
 		# ext3 needs at least 1024 journal blocks, say 1024 fs, and
 		# we're going to overlay ecryptfs on ext3 for now...
 		min=`expr $blocksize \* 2048 / 1048576`
 	;;
-	"xfs") # xfs needs at least 4k blocks
-		min=`expr $blocksize \* 4096 / 1048576`
+	"xfs") # xfs needs an allocation group of at least 16M
+		min=16
 	;;
 	"reiserfs") # reiserfs needs at least 513 journal blocks, say 1024 fs
 		min=`expr $blocksize \* 1537 / 1048576`
@@ -283,7 +300,7 @@ prep_fs() {
 
 	# Some file systems don't look like they are lvm compatible
 	case $fstype in
-	ext?|vfat|msdos|hfs|xfs|reiserfs|ecryptfs)
+	ext?|vfat|msdos|hfs|xfs|reiserfs|ecryptfs|btrfs)
 		LV_DEV=""
 		prep_lvm $file
 		if [ x"$LV_DEV" != "x" ] ; then
@@ -294,39 +311,13 @@ prep_fs() {
 
 	# Switch on the file system type for special cases
 	case $fstype in
-	ext2) /sbin/mke2fs -q -i 4096 -b $BLOCKSIZE -F $file
+	ext2) /sbin/mkfs.ext2 -q -i 4096 -b $BLOCKSIZE -F $file
 	;;
-	ext3) /sbin/mke2fs -q -b $BLOCKSIZE -j -F $file
+	ext3) /sbin/mkfs.ext3 -q -b $BLOCKSIZE -F $file
 	;;
-	ext4) /sbin/mke2fs -t $fstype -q -b $BLOCKSIZE -j -F $file
+	ext4) /sbin/mkfs.ext4 -q -b $BLOCKSIZE -F $file
 	;;
-	btrfs) /sbin/mke2fs -q -b $BLOCKSIZE -j -F $file
-		mount $file $DIR -o loop >/dev/null 2>&1
-		if [ $? -eq 0 ] ; then
-			typeset dev=`mount | grep $DIR | awk '{ print $1 }'`
-			# Make sure we only have 1 entry
-			if [ `echo $dev | wc -w` -ne 1 ] ; then
-				umount $DIR 
-				echo "Error 1 creating btrfs file system"
-				exit 1
-			fi
-				
-			# make dead sure we have the right device
-			typeset tst=`echo $dev | grep loop`
-			if [ x"$tst" = "x" ] ; then
-				umount $DIR 
-				echo "Error 2 creating btrfs file system"
-				exit 1
-			fi
-			/sbin/btrfs-convert $dev
-			if [ $? -ne 0 ] ; then
-				echo "Error 3 creating btrfs file system"
-				umount $DIR
-				exit 1
-			fi
-			populate_fs $DIR 
-			umount $DIR 
-		fi
+	btrfs) /sbin/mkfs.btrfs -s $BLOCKSIZE -f $file
 	;;
 	ecryptfs) /sbin/mke2fs -q -b $BLOCKSIZE -j -F $file
 	;;
@@ -337,6 +328,8 @@ prep_fs() {
 	hfs) /usr/bin/hformat $file >/dev/null
 	;;
 	xfs) /sbin/mkfs.xfs -q -b size=$BLOCKSIZE -f -d name=$file
+	;;
+	gfs2) /sbin/mkfs.gfs2 -O -b $BLOCKSIZE -p lock_nolock -j 1 -J 8 $file
 	;;
 	swap) /sbin/mkswap $file
 	;;
@@ -374,42 +367,6 @@ prep_fs() {
 		/sbin/mksquashfs tmp $file -b $BLOCKSIZE >/dev/null 2>&1
 		rm -f tmp/* ; rmdir tmp
 	;;
-	# A complicated file format to setup and we need to be very careful
-	gfs2)   /usr/bin/hformat $file >/dev/null 2>&1
-		if [ $? -ne 0 ] ; then
-			echo "Error creating gfs2 file system"
-			exit 1
-		fi
-		mount $file $DIR -o loop >/dev/null 2>&1
-		if [ $? -eq 0 ] ; then
-			typeset dev=`mount | grep $DIR | awk '{ print $1 }'`
-			# Make sure we only have 1 entry
-			if [ `echo $dev | wc -w` -ne 1 ] ; then
-				umount $DIR 
-				echo "Error creating gfs2 file system"
-				exit 1
-			fi
-				
-			# make dead sure we have the right device
-			typeset tst=`echo $dev | grep loop`
-			if [ x"$tst" = "x" ] ; then
-				umount $DIR 
-				echo "Error creating gfs2 file system"
-				exit 1
-			fi
-			/sbin/mkfs.gfs2 -O -b $BLOCKSIZE -p lock_nolock -j 1 -J 8 $dev >/dev/null 2>&1
-			tst="$?"
-			populate_fs $DIR 
-			umount $DIR 
-			if [ $tst -ne 0 ] ; then
-				echo "Error creating gfs2 file system"
-				exit 1
-			fi
-		else
-			echo "Error mounting gfs2 file system...you may need to reboot your machine"
-			exit 1
-		fi
-	;;
 	jffs2) mkdir tmp; mv $file tmp
 		populate_fs tmp
 		/usr/sbin/mkfs.jffs2 -d tmp -l --with-xattr -o $file >/dev/null 2>&1
@@ -427,7 +384,7 @@ prep_fs() {
 
 	# Populate the initial image for filesystem created from files
 	case $fstype in
-	ext?|vfat|msdos|hfs|xfs|reiserfs|ecryptfs|udf)
+	ext?|vfat|msdos|hfs|xfs|reiserfs|ecryptfs|udf|btrfs|gfs2)
 		echo "Populating image..."
 
 		# OK mount the file system
@@ -505,7 +462,7 @@ do
 
 	# Switch on fs specific setups
 	case $fs in
-	xfs|ecryptfs) modprobe $fs
+	ecryptfs) modprobe $fs
 	;;
 	ext4|romfs) START_SWEEP="5"
 	;;
