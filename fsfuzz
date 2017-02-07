@@ -171,7 +171,7 @@ pick_filesystem_size () {
 	;;
 	"btrfs")
 		# for bare mkfs.btrfs; other mkfs options might require more
-		min=16
+		min=136
 	;;
 	"ecryptfs")
 		# ext3 needs at least 1024 journal blocks, say 1024 fs, and
