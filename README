@@ -8,7 +8,7 @@ BUILDING
 ========
 To build from the repo after cloning:
 
-cd fapolicyd
+cd fsfuzzer
 ./autogen.sh
 ./configure
 make
